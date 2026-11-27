@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>NodeAudioBridge</string>
+<key>CFBundleIdentifier</key><string>com.nia-teams.NodeAudioBridge</string>
+<key>CFBundleName</key><string>NodeAudioBridge</string>
+<key>CFBundlePackageType</key><string>BNDL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>LSMinimumSystemVersion</key><string>11.0</string>
+<key>CFPlugInFactories</key><dict>
+<key>B3B065A3-0120-43AA-8548-D01E0605A0EA</key><string>BlackHole_Create</string>
+</dict>
+<key>CFPlugInTypes</key><dict>
+<key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+<array><string>B3B065A3-0120-43AA-8548-D01E0605A0EA</string></array>
+</dict>
+</dict></plist>
