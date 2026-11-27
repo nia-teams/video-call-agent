@@ -1,0 +1,57 @@
+{
+  "name": "video-call-agent",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "studio": "bash scripts/studio.sh",
+    "build:studio": "node run-next.mjs build:studio",
+    "studio:production": "NODE_ENV=production node media/server.mjs",
+    "build:capture": "zsh media/native/build.sh",
+    "test:media": "node --test media/tests/*.test.mjs",
+    "dev": "node run-next.mjs dev",
+    "build": "node run-next.mjs build",
+    "start": "bash scripts/start.sh",
+    "typecheck": "tsc --noEmit",
+    "test:qwen": "node --import tsx --test tests/qwen/*.test.ts",
+    "start:check": "bash scripts/start.sh --check",
+    "stop": "bash scripts/stop.sh",
+    "obs:status": "node media/obs-cli.mjs status",
+    "obs:prepare": "node media/obs-cli.mjs prepare",
+    "obs:source": "node media/obs-cli.mjs source",
+    "test:live-canvas": "node --import tsx --test tests/live-canvas/*.test.ts",
+    "test:studio": "node --import tsx --test tests/studio/*.test.ts",
+    "env:check": "node env.mjs",
+    "setup": "bash install-dependencies.sh",
+    "setup:check": "bash install-dependencies.sh --check",
+    "setup:plan": "bash install-dependencies.sh --dry-run",
+    "node:setup": "bash scripts/setup-node.sh",
+    "driver:build": "zsh media/native/node-audio-driver/build.sh",
+    "driver:install": "bash media/native/node-audio-driver/install.sh",
+    "camera": "bash scripts/camera.sh",
+    "camera:check": "bash scripts/camera.sh --check",
+    "camera:calibrate": "bash scripts/camera.sh --calibrate-camera",
+    "camera:self-test": "bash scripts/camera.sh --self-test"
+  },
+  "dependencies": {
+    "next": "16.4.3",
+    "obs-websocket-js": "^5.0.8",
+    "openai": "^6.49.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sharp": "^0.35.5",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "esbuild": "^0.28.2",
+    "react-test-renderer": "^19.3.1",
+    "sass": "^1.108.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OBS 虚拟摄像头"
+  short_description: "配置 macOS 上的 OBS 视频输出与虚拟摄像头，并验证通话本地预览"
+  default_prompt: "使用 $obs-virtual-camera 配置 OBS 视频输出，并验证通话中的虚拟摄像头画面。"

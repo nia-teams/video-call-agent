@@ -1,0 +1,81 @@
+# macOS and editors
+.DS_Store
+._*
+.AppleDouble/
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# Node.js / Next.js / TypeScript
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+.turbo/
+coverage/
+.nyc_output/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Swift / native build output
+.build/
+DerivedData/
+
+# Project runtime and generated artifacts
+.runtime/
+.runtime-signing/
+# Never publish app packages, reverse-engineering evidence, or signing material
+/analysis/
+*.apk
+*.dex
+*.desc
+*.ipa
+*.p12
+*.pfx
+*.mobileprovision
+*.keystore
+*.jks
+*.pem
+*.key
+.local-private/
+.next-studio/
+.next-studio-dev/
+
+# Local media and capture output
+recordings/
+*.wav
+*.pcm
+*.mp4
+
+# Keep the platform dependency lock reproducible
+!package-lock.json

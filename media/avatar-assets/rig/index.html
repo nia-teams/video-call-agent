@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>HeR · 程序化绑定 v8</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#211d1b;color:#eee;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh}
+#stage{width:min(100vw,520px);aspect-ratio:1024/1180;margin-top:8px;border-radius:14px;overflow:hidden;background:radial-gradient(ellipse at 50% 30%,#4a3a30,#211d1b)}
+#stage canvas{width:100%;height:100%;display:block}
+.panel{width:min(100vw,520px);padding:12px 14px 40px;display:flex;flex-direction:column;gap:10px}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+button,label.file{background:#3a312c;color:#f3d9c2;border:1px solid #5a4a40;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer}
+button.on{background:#c98d5c;color:#211d1b;border-color:#c98d5c}
+.row{display:flex;align-items:center;gap:10px;font-size:13px;color:#bbb}
+.row span{width:70px;flex:none}
+.row input[type=range]{flex:1}
+#vis{font-size:13px;color:#c98d5c;min-height:18px}
+details{font-size:13px;color:#aaa}
+summary{cursor:pointer;color:#ddd}
+body.embed{background:transparent;justify-content:center;min-height:0;height:100vh;overflow:hidden}
+body.embed .panel{display:none}
+body.embed #stage{width:auto;height:100vh;max-width:100vw;margin:0;border-radius:0;background:transparent}
+body.embed.studio #stage{width:calc(100vh * 0.86779661);max-width:none;flex-shrink:0}
+</style>
+</head>
+<body>
+<script>if(/[?&]embed=1/.test(location.search))document.body.classList.add("embed");if(/[?&]studio=1/.test(location.search))document.body.classList.add("studio")</script>
+<div id="stage"></div>
+<div class="panel">
+  <div class="btns">
+    <button id="bMouse" class="on">跟随鼠标/手指</button>
+    <button id="bDemo">演示说话</button>
+    <button id="bMic">麦克风</button>
+    <label class="file">播放音频<input id="fAudio" type="file" accept="audio/*" hidden></label>
+    <button id="bBlink">眨眼</button>
+  </div>
+  <div class="btns" id="exps"></div>
+  <div id="vis">口型：—</div>
+  <details>
+    <summary>手动参数</summary>
+    <div class="row"><span>左右转头</span><input id="sAX" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>上下点头</span><input id="sAY" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>歪头</span><input id="sAZ" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>身体左右</span><input id="sBodyX" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>身体前后</span><input id="sBodyY" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>身体倾斜</span><input id="sBodyZ" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>睁眼</span><input id="sEye" type="range" min="0" max="1" step="0.01" value="1"></div>
+    <div class="row"><span>张嘴</span><input id="sMouth" type="range" min="0" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>视线左右</span><input id="sGX" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>视线上下</span><input id="sGY" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>笑眼</span><input id="sSmile" type="range" min="0" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>眉毛上下</span><input id="sBY" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>眉毛角度</span><input id="sBA" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>皱眉</span><input id="sBX" type="range" min="-1" max="0" step="0.01" value="0"></div>
+    <div class="row"><span>嘴形</span><input id="sMF" type="range" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>脸红</span><input id="sCheek" type="range" min="0" max="1" step="0.01" value="0"></div>
+    <div class="row"><span>口型</span><select id="sVowel"><option>a</option><option>i</option><option>u</option><option>e</option><option>o</option></select></div>
+    <p style="margin-top:6px">拖动参数时会暂停自动动作，点「跟随鼠标」恢复。外部接入：<code>HeR.feedPCM(Float32Array, sampleRate)</code></p>
+  </details>
+</div>
+<script src="lib/pixi.min.js"></script>
+<script src="../speech-lipsync.js"></script>
+<script src="../presence-motion.js?v=6"></script>
+<script src="../studio-output.js?v=1" defer></script>
+<script>
+(async()=>{
+const W=1024, VIEW_H=1180;
+// OBS CEF commonly reports DPR=1 even for a 1080x1920 source. Render at 2x
+// before CSS fitting so the final portrait is downsampled instead of upscaled.
+const renderResolution=/[?&]studio=1/.test(location.search)?2:Math.min(devicePixelRatio,2);
+const app=new PIXI.Application({width:W,height:VIEW_H,backgroundAlpha:0,antialias:true,resolution:renderResolution,autoDensity:false});
+document.getElementById('stage').appendChild(app.view);
+const meta=await (await fetch('assets/layers.json')).json();
+const names=['back_hair','handwear_l','handwear_r','neck','topwear','collar_front','ears_r','ears_l','face','front_hair','nose','hair_out_l','hair_out_r','hair_in_l','hair_in_r','hair_bang_l','hair_bang_r','bh_long','bh_cap','bh_side_l','bh_side_r',
+ 'eyewhite_r','eyewhite_l','eyeiris_r','eyeiris_l','eyelash_r','eyelash_l','eyebrow_l','eyebrow_r','eyeclosed_r','eyeclosed_l','eyelid_r','eyelid_l',
+ 'mouth_up','mouth_lo','eyelid_clean_r','eyelid_clean_l','eyelash_up_r','eyelash_up_l','laugheye_r','laugheye_l','sleepeye_r','sleepeye_l','mouth_inup','mouth_inlo'];
+const tex={};
+await Promise.all(names.map(async n=>{tex[n]=await PIXI.Assets.load('assets/'+n+'.png')}));
+const box=n=>n.startsWith('eyewhite')||n.startsWith('eyeiris')?meta['eye_'+n.slice(-1)]:meta[n];
+function spr(n){const s=new PIXI.Sprite(tex[n]);const b=box(n);s.position.set(b.x,b.y);return s}
+function plane(t,b,c,r){const m=new PIXI.SimplePlane(t,c,r);m.position.set(b.x,b.y);const buf=m.geometry.getBuffer('aVertexPosition');m._buf=buf;m._o=Float32Array.from(buf.data);m._b=b;return m}
+function mesh(n,c,r,rootY,len){const m=plane(tex[n],meta[n],c,r);m._rootY=rootY;m._len=len;return m}
+// ===== Bezier lattice warp deformers =====
+// Each part gets its own coarse Bezier lattice (cols x rows control points).
+// Keyforms are stored only at Angle X = -1/0/+1 and Angle Y = -1/0/+1; the pose is a linear blend.
+// Inside a part the mapping is a smooth low-order Bezier, so the art itself is never rippled.
+const FAC=[1,1,2,6,24];const bern=(n,i,t)=>{const c=FAC[n]/(FAC[i]*FAC[n-i]);return c*Math.pow(t,i)*Math.pow(1-t,n-i)};
+function warp(pl,cols,rows){const o=pl._o,b=pl._b,W=[];
+  let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;for(let i=0;i<o.length;i+=2){mnx=Math.min(mnx,o[i]);mxx=Math.max(mxx,o[i]);mny=Math.min(mny,o[i+1]);mxy=Math.max(mxy,o[i+1])}
+  for(let i=0;i<o.length;i+=2){const u=(o[i]-mnx)/(mxx-mnx),v=(o[i+1]-mny)/(mxy-mny),w=[];
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)w.push(bern(cols-1,c,u)*bern(rows-1,r,v));W.push(w)}
+  pl._W=W;pl._cols=cols;pl._rows=rows;return pl}
+function applyWarp(pl,off){const d=pl._buf.data,o=pl._o,W=pl._W;
+  for(let k=0;k<W.length;k++){const w=W[k];let dx=0,dy=0;for(let j=0;j<w.length;j++){dx+=w[j]*off[j][0];dy+=w[j]*off[j][1]}
+    d[2*k]=o[2*k]+dx;d[2*k+1]=o[2*k+1]+dy}
+  pl._buf.update()}
+// keyform tables: grid[row][col] = [dx,dy] at the extreme of that parameter
+const G=(rows)=>rows.flat();
+const mirror=(k,cols)=>{const r=[];for(let j=0;j<k.length/cols;j++)for(let i=0;i<cols;i++){const q=k[j*cols+(cols-1-i)];r.push([-q[0],q[1]])}return r};
+function blend(kf,X,Y,extra){const n=kf.xp.length,r=[];
+  for(let j=0;j<n;j++){const kx=X>=0?kf.xp[j]:kf.xn[j],ky=Y>=0?kf.yp[j]:kf.yn[j];
+    r.push([Math.abs(X)*kx[0]+Math.abs(Y)*ky[0]+(extra?extra[j][0]:0),Math.abs(X)*kx[1]+Math.abs(Y)*ky[1]+(extra?extra[j][1]:0)])}
+  return r}
+// ---- Head parent warp ("face curve" deformer), 3x3 control points over the head box.
+// Hand-authored keyframes: turn side compresses, centre column leads ("く" nose line),
+// chin row moves least (stays on the neck). Values are pixel offsets at Angle X/Y = +1.
+// Turn perspective: an approximate dome-shaped head volume gives
+// each point a depth z; the Angle X keyform moves a point by z*sin(theta), Angle Y likewise vertically. So the nose /
+// eye row (front) leads, the cheek contour moves less, the head outline / crown / ears (z ~ 0) stay put: the far half
+// of the face compresses, the near half widens, and the face slides over the ears and the back hair.
+// The keyform is baked into a 5x5 Bezier lattice (least-squares fit) — at runtime it is pure keyform interpolation.
+const HB={x0:300,x1:720,y0:30,y1:570};
+const HEAD3D={cx:510,cy:300,rx:210,ry:270,rz:190,tx:.22,ty:.1,shift:5};
+const headZ=(x,y)=>{const u=(x-HEAD3D.cx)/HEAD3D.rx,v=(y-HEAD3D.cy)/HEAD3D.ry;return HEAD3D.rz*Math.max(0,1-u*u-v*v)};
+function fitLattice(fn){ // least-squares 5x5 Bernstein control points for an offset field fn(x,y)->[dx,dy]
+  const N=25,A=Array.from({length:N},()=>new Float64Array(N)),bx=new Float64Array(N),by=new Float64Array(N);
+  for(let j=0;j<=36;j++)for(let i=0;i<=36;i++){const u=i/36,v=j/36,x=HB.x0+u*(HB.x1-HB.x0),y=HB.y0+v*(HB.y1-HB.y0),f=fn(x,y),w=[];
+    for(let r=0;r<5;r++)for(let c=0;c<5;c++)w.push(bern(4,c,u)*bern(4,r,v));
+    for(let a=0;a<N;a++){bx[a]+=w[a]*f[0];by[a]+=w[a]*f[1];for(let b=0;b<N;b++)A[a][b]+=w[a]*w[b]}}
+  const solve=rhs=>{const M=A.map((r,i)=>[...r,rhs[i]]);for(let i=0;i<N;i++){let p=i;for(let k=i+1;k<N;k++)if(Math.abs(M[k][i])>Math.abs(M[p][i]))p=k;[M[i],M[p]]=[M[p],M[i]];
+      for(let k=0;k<N;k++)if(k!==i){const f=M[k][i]/M[i][i];for(let c=i;c<=N;c++)M[k][c]-=f*M[i][c]}}return M.map((r,i)=>r[N]/r[i])};
+  const X=solve(bx),Y=solve(by);return X.map((v,i)=>[v,Y[i]])}
+const HEADKF={
+  // x' = (x-cx)cos + z sin: the cos term (only on the face volume) narrows the far half, the z term makes the front lead
+  xp:fitLattice((x,y)=>{const z=headZ(x,y),m=Math.min(1,2*z/HEAD3D.rz);return [(x-HEAD3D.cx)*(Math.cos(HEAD3D.tx)-1)*m+z*Math.sin(HEAD3D.tx)+HEAD3D.shift,0]}),
+  // nod: same dome but evaluated with a flatter vertical profile, so the eye band moves as one piece (no vertical squash of the eyes)
+  yp:fitLattice((x,y)=>{const u=(x-HEAD3D.cx)/HEAD3D.rx,v=(y-HEAD3D.cy)/(HEAD3D.ry*1.6);return [0,HEAD3D.rz*Math.max(0,1-u*u-v*v)*Math.sin(HEAD3D.ty)]})};
+HEADKF.xn=HEADKF.xp.map(q=>[-q[0],q[1]]); HEADKF.yn=HEADKF.yp.map(q=>[q[0],-q[1]]);
+// Front hair is a shell OUTSIDE the skull: bigger radius, so its turn keyform is flatter (less stretch across the near
+// side). With the face's own field the near-side locks stretched apart and the skin between them showed as a pale line.
+const HAIR3D={rx:300,ry:360,rz:200};
+const hairZ=(x,y)=>{const u=(x-HEAD3D.cx)/HAIR3D.rx,v=(y-HEAD3D.cy)/HAIR3D.ry;return HAIR3D.rz*Math.max(0,1-u*u-v*v)};
+const HAIRKF={
+  xp:fitLattice((x,y)=>{const z=hairZ(x,y),m=Math.min(1,2*z/HAIR3D.rz);return [(x-HEAD3D.cx)*(Math.cos(HEAD3D.tx)-1)*m*.6+z*Math.sin(HEAD3D.tx)+HEAD3D.shift,0]}),
+  yp:fitLattice((x,y)=>[0,hairZ(x,y)*Math.sin(HEAD3D.ty)])};
+HAIRKF.xn=HAIRKF.xp.map(q=>[-q[0],q[1]]); HAIRKF.yn=HAIRKF.yp.map(q=>[q[0],-q[1]]);
+let HOFF_H=null;
+// Each part has an independent displacement field, blended at its attachment points.
+// Parallax budgets are derived from this character's layer sizes in pixels.
+const RIG={eyeY:meta.eyewhite_r.h*.25};
+const RIGX={front:meta.front_hair.w*.05,back:-meta.back_hair.w*.003};
+const ZERO25=Array.from({length:25},()=>[0,0]);
+let HOFF=null, CROWN=()=>[0,0];
+function headField(x,y,F){F=F||HOFF;const u=Math.max(0,Math.min(1,(x-HB.x0)/(HB.x1-HB.x0))),v=Math.max(0,Math.min(1,(y-HB.y0)/(HB.y1-HB.y0)));
+  let dx=0,dy=0;for(let r=0;r<5;r++)for(let c=0;c<5;c++){const w=bern(4,c,u)*bern(4,r,v),q=F[r*5+c];dx+=w*q[0];dy+=w*q[1]}return [dx,dy]}
+function headFollow(pl,k=1,extra,F){const d=pl._buf.data,o=pl._o,b=pl._b;
+  for(let i=0;i<d.length;i+=2){const gx=b.x+o[i],gy=b.y+o[i+1],h=headField(gx,gy,F),e=extra?extra(gx,gy):[0,0];
+    d[i]=o[i]+h[0]*k+e[0];d[i+1]=o[i+1]+h[1]*k+e[1]}
+  pl._buf.update()}
+// ---- Body parent lattice warp: 3 cols x 4 rows over the torso, waist row pinned.
+// Keyforms for ParamBodyAngleX (turn), ParamBodyAngleY (lean forward = +, same sign as Angle Y look-down) and ParamBreath.
+// The head is the child of this deformer: it rides on the neck point (top-centre of the lattice).
+const BB={x0:0,x1:1024,y0:470,y1:1536};
+const BODYKF={
+  xp:G([[[18,-2],[40,0],[12,3]],     // shoulders: centre leads, far side compresses and drops a touch, like the head
+        [[10,0],[24,0],[ 7,1]],
+        [[ 3,0],[ 7,0],[ 2,0]],
+        [[ 0,0],[ 0,0],[ 0,0]]]),
+  yp:G([[[-7,12],[0,16],[7,12]],     // lean in: shoulders drop and come forward (slightly wider)
+        [[-4,6],[0,8],[4,6]],
+        [[0,1],[0,1],[0,1]],
+        [[0,0],[0,0],[0,0]]])};
+BODYKF.xn=mirror(BODYKF.xp,3); BODYKF.yn=BODYKF.yp.map(q=>[-q[0],-q[1]]);
+const BREATHKF=G([[[-1.2,-3.2],[0,-2.6],[1.2,-3.2]],   // inhale: shoulders rise, chest widens a touch
+                  [[-1.6,-1.6],[0,-1.2],[1.6,-1.6]],
+                  [[-.4,-.4],[0,-.3],[.4,-.4]],
+                  [[0,0],[0,0],[0,0]]]);
+let BOFF=null;
+function bodyField(x,y){const u=Math.max(0,Math.min(1,(x-BB.x0)/(BB.x1-BB.x0))),v=Math.max(0,Math.min(1,(y-BB.y0)/(BB.y1-BB.y0)));
+  let dx=0,dy=0;for(let r=0;r<4;r++)for(let c=0;c<3;c++){const w=bern(2,c,u)*bern(3,r,v),q=BOFF[r*3+c];dx+=w*q[0];dy+=w*q[1]}return [dx,dy]}
+function bodyFollow(pl){const d=pl._buf.data,o=pl._o,b=pl._b;
+  for(let i=0;i<d.length;i+=2){const h=bodyField(b.x+o[i],b.y+o[i+1]);d[i]=o[i]+h[0];d[i+1]=o[i+1]+h[1]}pl._buf.update()}
+const NECK={x:507,y:520}; // where the head deformer is pinned on the body
+const interp=(xs,ys,x)=>{if(x<=xs[0])return ys[0];const n=xs.length-1;if(x>=xs[n])return ys[n];let i=0;while(xs[i+1]<x)i++;const t=(x-xs[i])/(xs[i+1]-xs[i]);return ys[i]+(ys[i+1]-ys[i])*t};
+const RES=2; // render-textures at 2x: face is drawn to a texture and then warped; at 1x the double resampling smeared the dark lash edges into a brown wedge at the outer eye corners
+// ---------- scene ----------
+const stageRoot=new PIXI.Container();app.stage.addChild(stageRoot); stageRoot.y=-10;
+if(/[?&]studio=1/.test(location.search)){
+  const portraitScale=0.7225;
+  stageRoot.scale.set(portraitScale);
+  stageRoot.x=W*(1-portraitScale)/2;
+  stageRoot.y=VIEW_H*(1-portraitScale)/2-10*portraitScale;
+}
+// ParamBodyAngleZ: the whole model (body + head as its child) leans around the waist, below the frame
+const root=new PIXI.Container();root.pivot.set(512,1536);root.position.set(512,1536);stageRoot.addChild(root);
+const PIV={x:507,y:500};
+function headGroup(){const c=new PIXI.Container();c.pivot.set(PIV.x,PIV.y);c.position.set(PIV.x,PIV.y);return c}
+const backHead=headGroup(); root.addChild(backHead);
+const body=new PIXI.Container(); root.addChild(body);
+const head=headGroup(); root.addChild(head);
+const L={};
+// back hair split: long back hair (heavy, slow, lower part carried by the body),
+// back-of-head cap (moves with the head only), side curls by the ears (light, own chain). Drawn back to front.
+L.bh_long=mesh('bh_long',24,30,330,760); backHead.addChild(L.bh_long);
+L.bh_cap=mesh('bh_cap',12,12,0,1); backHead.addChild(L.bh_cap);
+const BACKG=[['bh_side_l',250,420,.85,{k:44,c:3.6,g:120,lag:1.15}],['bh_side_r',250,420,.85,{k:47,c:3.7,g:115,lag:1.15}]];
+for(const [n,ry,len] of BACKG){L[n]=mesh(n,10,22,ry,len);backHead.addChild(L[n])}
+['handwear_l','handwear_r','topwear'].forEach(n=>{L[n]=plane(tex[n],meta[n],16,20);body.addChild(L[n])});
+// neck: mesh whose top follows the head, bottom stays in collar; collar front drawn over it
+L.neck=plane(tex.neck,meta.neck,6,10); body.addChild(L.neck);
+L.collar=plane(tex.collar_front,meta.collar_front,6,24); body.addChild(L.collar);
+// head
+head.addChild(L.ears_r=plane(tex.ears_r,meta.ears_r,6,8)); head.addChild(L.ears_l=plane(tex.ears_l,meta.ears_l,6,8));
+const FB={x:330,y:90,w:360,h:440};
+const faceG=new PIXI.Container(); const fadd=o=>{faceG.addChild(o);return o};
+L.face=fadd(spr('face'));
+// ---- blush (ParamCheek): soft ellipses under the eyes, drawn on the skin below the eyes
+const blush=fadd(new PIXI.Graphics());
+blush.beginFill(0xff7a7a).drawEllipse(426,370,44,17).drawEllipse(592,370,44,17).endFill();
+blush.filters=[new PIXI.BlurFilter(16,4)]; blush.alpha=0;
+// ---- eyes. Layer structure: white + iris (clipped by the white) + lashes, all on the same lid deformation.
+// The iris is NEVER squashed: it is only clipped by the deformed white, like a real eyeball under the lid.
+const eyes={};
+for(const s of ['r','l']){
+  const B=meta['eyeclosed_'+s], E=meta._eyes[s], EB=meta['eye_'+s];
+  const lid=fadd(spr('eyelid_'+s)); lid.alpha=0;
+  const wpl=fadd(plane(tex['eyewhite_'+s],EB,8,14));
+  const ir=fadd(spr('eyeiris_'+s));
+  const maskRT=PIXI.RenderTexture.create({width:EB.w,height:EB.h,resolution:RES});
+  const msk=fadd(new PIXI.Sprite(maskRT)); msk.position.set(EB.x,EB.y); ir.mask=msk;
+  const lpl=fadd(plane(tex['eyelash_'+s],meta['eyelash_'+s],10,14));
+  const cl=fadd(spr('eyeclosed_'+s)); cl.alpha=0;
+  // smiling closed eye (EyeOpen 0 + EyeSmile 1), drawn by bending the eyelid:
+  // skin covers the eye, and the UPPER lash line keeps its upward arch, squashed down onto the eye line -> "∩" (^^).
+  // Lower lashes are dropped. (Bending the blink arc "∪" was wrong: the lid pointed down.)
+  const cs=fadd(new PIXI.Container()); cs.alpha=0;
+  // laugh eyes: painted by the image model as a whole (eyes + surrounding skin), swapped in as one part
+  cs.addChild(spr('laugheye_'+s));
+  // sleepy eyes: also painted by the image model as one part (half-lowered lids + surrounding skin)
+  const ss=fadd(spr('sleepeye_'+s)); ss.alpha=0;
+
+  const cx=(E.x[0]+E.x[E.x.length-1])/2, hw=(E.x[E.x.length-1]-E.x[0])/2;
+  eyes[s]={ir,ix:ir.x,iy:ir.y,wpl,lpl,cs,ss,maskRT,lid,cl,B,E,EB,cx,hw,MM:new PIXI.Matrix().translate(-EB.x,-EB.y)};
+}
+// lid deformation shared by white and lashes. k = open (0..1.2), sm = eye smile (lower lid rises, crescent),
+// sx = horizontal perspective scale for Angle X (far eye narrower), dx = parallax shift
+// lid deformation shared by white and lashes. k = open (0..1.2), sm = eye smile (lower lid rises, crescent),
+// sx = horizontal perspective scale for Angle X (far eye narrower), dx = parallax shift
+// One set of eye layers (lash, white, iris). Keyframes on two parameters:
+//   EyeOpen 1 -> 0 : the upper half squashes onto the closing line (the clean v14 blink)
+//   EyeSmile 0 -> 1: the closing line itself bends from the painted closing line (∪) to the laugh arc (∩, shape
+//                    measured from the painted laugh reference); lashes keep a minimum thickness so the ∩ stays visible.
+// Both lines are low-order fits (smooth, mirrored left/right), so a half-open lid can't zig-zag.
+// Expressions only set parameters (laugh = open 0 + smile 1, sleepy = open 0.5): one artwork, continuous interpolation.
+const lerpA=(a,b,t)=>a+(b-a)*t;
+function lidDeform(e,pl,k,sm,sx,dx,isLash){const d=pl._buf.data,o=pl._o,b=pl._b,E=e.E;
+  for(let i=0;i<d.length;i+=2){const gx=b.x+o[i],gy=b.y+o[i+1];
+    const u=Math.max(-1,Math.min(1,(gx-e.cx)/e.hw)),bell=Math.max(0,1-u*u);
+    const Lt=lerpA(interp(E.x,E.Lclosed,gx),interp(E.x,E.Llaugh,gx),sm);
+    const ku=isLash?Math.max(k,.22*sm):k;
+    let ny;
+    if(gy<Lt) ny=Lt+(gy-Lt)*Math.min(1.2,ku);
+    else{const kk=Math.min(k,1), lo=lerpA(.3+.7*kk,kk,sm);   // smiling: the lower lid rises all the way to the ∩ (white tucked under the upper lash)
+      ny=Lt+(gy-Lt)*lo*(1-.35*sm)-sm*3*bell*Math.min(1,k*2);}
+    d[i]=e.cx+(gx-e.cx)*sx+dx-b.x; d[i+1]=ny-b.y}
+  pl._buf.update()}
+// ---- brows: each brow is a coarse mesh with Y / Angle / Form / X like the standard ParamBrow* set
+for(const s of ['r','l']){const B=meta['eyebrow_'+s];const pl=fadd(plane(tex['eyebrow_'+s],B,8,3));
+  eyes[s].brow=pl; eyes[s].bcx=B.x+B.w/2; eyes[s].bhw=B.w/2; eyes[s].inner=s==='r'?1:-1}
+function browDeform(e,Y,A,F,X,dx){const pl=e.brow,d=pl._buf.data,o=pl._o,b=pl._b;
+  for(let i=0;i<d.length;i+=2){const gx=b.x+o[i],gy=b.y+o[i+1];const u=(gx-e.bcx)/e.bhw*e.inner; // +1 = inner end
+    const dy=-Y*12 - A*9*u - F*4*(1-u*u) ;
+    d[i]=o[i]+X*7*e.inner*-1*(.6+.4*u)+dx; d[i+1]=o[i+1]+dy}
+  pl._buf.update()}
+L.nose=fadd(spr('nose'));
+// ---- mouth: procedural opening between the original upper / lower lip
+const LIP=meta._lip, MCX=509, MHW=46;
+const lipY=x=>interp(LIP.x,LIP.y,x);
+const mouthC=fadd(new PIXI.Container());
+const inner=new PIXI.Graphics(), innerMask=new PIXI.Graphics(), teeth=new PIXI.Graphics(), tongue=new PIXI.Graphics();
+const innerC=new PIXI.Container(); innerC.addChild(inner,teeth,tongue,innerMask); innerC.mask=innerMask; mouthC.addChild(innerC);
+const mUp=plane(tex.mouth_up,meta.mouth_up,12,6), mLo=plane(tex.mouth_lo,meta.mouth_lo,12,6); mouthC.addChild(mLo,mUp);
+const prof=(u,e=.55)=>Math.pow(Math.max(0,1-u*u),e);
+const softF=new PIXI.BlurFilter(1.4,2); innerC.filters=[softF];
+const teethHi=new PIXI.Graphics(); innerC.addChildAt(teethHi,2);
+// Painted mouth interior, layer layout: dark mouth cavity as base, the UPPER TEETH part rides on the
+// upper lip, the TONGUE part rides on the lower lip / jaw; both are clipped by the inner-mouth shape.
+// Art is cut from the painted "a" mouth (paint/mouth_a.png, same style as the base painting).
+const inUp=new PIXI.Sprite(tex.mouth_inup), inLo=new PIXI.Sprite(tex.mouth_inlo);
+inUp.anchor.set(.5,0); inLo.anchor.set(.5,0); innerC.addChildAt(inLo,1); innerC.addChildAt(inUp,2);
+const IN_CX=510, IN_UP_Y0=418, IN_UP_EDGE=425, IN_LO_Y0=428, IN_LO_EDGE=451;
+let MF=0; // ParamMouthForm: + smile (corners up), - frown (corners down)
+function lipShape(u,O,R){ // returns [upper offset (neg = up), lower offset]
+  const e=.58+.18*R, p=prof(u,e), c=-MF*7*u*u+MF*2;
+  return [-O*(.28+.10*R)*p+c, O*(.78-.12*R)*p+c]}
+function drawMouth(O,Wf,R){
+  const openN=Math.min(1,O/OMAX), rEff=R*Math.pow(openN,.65);
+  Wf=(1+(Wf-1)*Math.pow(openN,.5))*(1+.05*MF);
+  const WfIn=Wf*(1-.14*rEff);   // gentle corner narrowing on rounded vowels, no step discontinuity
+  for(const [m,up] of [[mUp,1],[mLo,0]]){const d=m._buf.data,o=m._o,b=m._b;
+    for(let i=0;i<d.length;i+=2){const gx=b.x+o[i],gy=b.y+o[i+1];
+      const u=Math.max(-1,Math.min(1,(gx-MCX)/MHW));
+      // Smoothly attenuate horizontal squeeze toward outer skin margin so surrounding skin isn't pinched
+      const skinFall=Math.max(0,1-Math.max(0,Math.abs(gx-MCX)-MHW*.75)/24);
+      const wLocal=1+(WfIn-1)*skinFall;
+      const sh=lipShape(u,O,rEff);
+      // Attenuate vertical displacement slightly at bottom of lower-lip chin skin to avoid pointy lower lip
+      const yFall=up?1:Math.max(.35,1-Math.max(0,gy-438)/32);
+      const nx=MCX+(gx-MCX)*wLocal;
+      d[i]=nx-b.x; d[i+1]=o[i+1]+(up?sh[0]:sh[1]*yFall)}
+    m._buf.update()}
+  inner.clear();innerMask.clear();teeth.clear();teethHi.clear();tongue.clear();
+  innerC.visible=O>.35; if(!innerC.visible)return;
+  const pts=[],N=24,X=u=>MCX+u*MHW*WfIn*.92;
+  for(let k=0;k<=N;k++){const u=-1+2*k/N;pts.push(X(u),lipY(MCX+u*MHW)+lipShape(u,O,rEff)[0]+.8)}
+  for(let k=N;k>=0;k--){const u=-1+2*k/N;pts.push(X(u),lipY(MCX+u*MHW)+lipShape(u,O,rEff)[1]+.8)}
+  inner.beginFill(0x5a1a20).drawPolygon(pts).endFill();
+  inner.beginFill(0x8a3434,.55).drawEllipse(MCX,lipY(MCX)+O*.32,MHW*WfIn*.78,O*.38).endFill();
+  innerMask.beginFill(0xffffff).drawPolygon(pts).endFill();
+  const yUp=lipY(MCX)+lipShape(0,O,rEff)[0]+1, yLo=lipY(MCX)+lipShape(0,O,rEff)[1]+1, sxI=WfIn*.96;
+  // Upper teeth stay visible on I / E / half-open (since upper lip now rises cleanly), fade softly on heavy round O/U
+  inUp.position.set(MCX+(IN_CX-MCX),yUp-4.5); inUp.scale.set(sxI,1); inUp.alpha=Math.max(.15,1-.85*rEff);
+  const sink=(1-openN)*4.5;
+  inLo.position.set(MCX+(IN_CX-MCX),yLo-(IN_LO_EDGE-IN_LO_Y0)+sink); inLo.scale.set(sxI,1);
+}
+const faceRT=PIXI.RenderTexture.create({width:FB.w,height:FB.h,resolution:RES});
+const faceM=new PIXI.Matrix().translate(-FB.x,-FB.y);
+const facePlane=plane(faceRT,FB,24,28); head.addChild(facePlane);
+
+// front hair split into locks: outer lock, inner (face-side) lock, bang — per side, drawn back to front.
+// Each lock is its own mesh with its own pendulum chain (see HAIRG below).
+const DEPTH={hair_bang_l:4,hair_bang_r:4,hair_in_l:3,hair_in_r:3,hair_out_l:2,hair_out_r:2,bh_side_l:-7,bh_side_r:-7,bh_long:-9,bh_cap:-10};
+const HAIRG=[ // name, rootY, length, head-follow k, chain params: stiffness, damping, inertia gain, tip lag
+  ['hair_out_l',150,800,1,{k:34,c:3.2,g:130,lag:1.15}], ['hair_out_r',150,800,1,{k:37,c:3.4,g:125,lag:1.13}],
+  ['hair_in_l', 150,780,1,{k:48,c:3.8,g:120,lag:1.1}], ['hair_in_r', 150,780,1,{k:51,c:3.9,g:116,lag:1.1}],
+  ['hair_bang_l',40,270,1,{k:95,c:6,g:110,lag:1}],     ['hair_bang_r',40,270,1,{k:100,c:6.2,g:105,lag:1}]];
+for(const [n,ry,len] of HAIRG){L[n]=mesh(n,14,26,ry,len);head.addChild(L[n])}
+const chains=Object.fromEntries([...HAIRG,...BACKG].map(([n])=>[n,{x1:0,v1:0,x2:0,v2:0,y1:0,vy1:0}]));
+// ---------- params / input ----------
+const P={ax:0,ay:0,az:0,bx:0,by:0,bz:0,eye:1,gx:0,gy:0,O:0,Wf:1,R:0,breath:0};
+// ---------- expressions (each entry = parameter, blend, value) ----------
+// add: value*w is added; mul: multiplied by 1+(value-1)*w; set: overwritten (lerp by w). Faded in/out over ~0.35 s.
+const EXPS={
+  '平静':[],
+  '微笑':[['smile','add',.5],['mForm','add',1],['eyeL','mul',1],['eyeR','mul',1],['bY','add',.1]],
+  '开心':[['smile','add',.6],['eyeL','mul',1.05],['eyeR','mul',1.05],['mForm','add',1],['mOpen','add',.4],['bY','add',.35],['bF','add',.3],['cheek','add',.45]],
+  '大笑':[['by','add',-.25],['smile','add',1],['eyeL','mul',0],['eyeR','mul',0],['mForm','add',1],['mOpen','add',.6],['bY','add',.4],['bF','add',.4],['cheek','add',.5],['ay','add',-.1]],
+  '惊讶':[['by','add',-.35],['eyeL','mul',1.18],['eyeR','mul',1.18],['bY','add',1],['bF','add',.8],['mOpen','add',.7],['mRound','add',.9],['mForm','add',-.5],['ay','add',-.15]],
+  '难过':[['by','add',.45],['bA','add',.9],['bY','add',.2],['bF','add',-.5],['eyeL','mul',.75],['eyeR','mul',.75],['mForm','add',-1],['gy','add',-.4],['ay','add',.15]],
+  '生气':[['bA','add',-1],['bX','add',-1],['bY','add',-.6],['bF','add',-.4],['eyeL','mul',.72],['eyeR','mul',.72],['mForm','add',-1],['ay','add',.12]],
+  '害羞':[['bz','add',.35],['by','add',.2],['cheek','add',1],['smile','add',.4],['eyeL','mul',.88],['eyeR','mul',.88],['mForm','add',.4],['bA','add',.4],['gy','add',-.5],['gx','add',-.45],['ay','add',.25],['az','add',.25]],
+  '思考':[['gx','add',.55],['gy','add',.6],['bLY','add',.6],['bRY','add',-.2],['bX','add',-.3],['mForm','add',-.35],['az','add',-.2],['ay','add',-.15]],
+  '困倦':[['by','add',.35],['bz','add',-.2],['eyeL','mul',.5],['eyeR','mul',.5],['bY','add',-.35],['bA','add',.2],['mForm','add',-.4],['gy','add',-.25],['ay','add',.2]],
+};
+let expCur='平静',expPrev=null,expW=1,expPrevW=0;
+function setExp(n){if(n===expCur)return;expPrev=expCur;expPrevW=expW;expCur=n;expW=0;
+  document.querySelectorAll('#exps button').forEach(b=>b.classList.toggle('on',b.textContent===n))}
+function applyExp(v,name,w){if(!name||w<=0)return;for(const [k,mode,val] of EXPS[name]){
+  const keys=k==='bY'?['bLY','bRY']:k==='bA'?['bLA','bRA']:k==='bF'?['bLF','bRF']:k==='bX'?['bLX','bRX']:[k];
+  for(const kk of keys){if(mode==='add')v[kk]+=val*w;else if(mode==='mul')v[kk]*=1+(val-1)*w;else v[kk]=v[kk]+(val-v[kk])*w}}}
+window.HeRsetExpression=setExp;
+let sac={x:0,y:0,next:0};
+const T={ax:0,ay:0,az:0,gx:0,gy:0};
+let follow=false,manual=false,t0=performance.now();
+let presence='idle',presenceAt=performance.now();
+let motionTarget=1,motionMix=1,directedTarget=1,directedMix=1,amplitudeTarget=3.2,amplitude=3.2,faceTarget=1,faceMix=1;
+const presenceMotion=new PresenceMotion();
+function setMotionStyle(style){if(!['current','lively','directed','expressive','animated','rhythmic'].includes(style))throw new Error('Unknown motion style');motionTarget=style==='current'?0:1;directedTarget=['directed','expressive','animated','rhythmic'].includes(style)?1:0;amplitudeTarget=['animated','rhythmic'].includes(style)?3.2:style==='expressive'?2.4:1;faceTarget=['animated','rhythmic'].includes(style)?1:0;presenceMotion.rhythmic=style==='rhythmic';presenceMotion.facePulse=null;presenceMotion.nextAccent=(performance.now()-t0)/1000+.25;}
+
+function setPresenceState(state,interrupted=false){
+  if(!['idle','listening','thinking','speaking'].includes(state))throw new Error('Unknown presence state');
+  presence=state;presenceAt=performance.now();presenceMotion.setState(state,(presenceAt-t0)/1000,interrupted);follow=false;manual=false;
+  setExp(state==='thinking'?'思考':state==='speaking'?'微笑':'平静');
+}
+
+function onPtr(e){if(!follow)return;const r=app.view.getBoundingClientRect();
+  const x=((e.clientX-r.left)/r.width-.5)*2,y=((e.clientY-r.top)/r.height-.3)*2;
+  T.ax=Math.max(-1,Math.min(1,x));T.ay=Math.max(-1,Math.min(1,y));T.gx=T.ax;T.gy=-T.ay;T.az=-T.ax*.3}
+addEventListener('pointermove',onPtr);addEventListener('touchmove',e=>onPtr(e.touches[0]),{passive:true});
+// blink: ease-in close, short hold, ease-out open (continuous, not frame swaps)
+let blinkT=-1,nextBlink=2000,dbl=false;
+function blink(){blinkT=0}
+function blinkK(t){const c=.075,h=.035,o=.15;if(t<c){const x=t/c;return 1-x*x}if(t<c+h)return 0;if(t<c+h+o){const x=(t-c-h)/o;return 1-Math.pow(1-x,3)}return 1}
+const hair={x:0,v:0};let lastAX=0;
+// ---------- independent PCM articulation ----------
+const lipSync=new SpeechLipSync();
+let actx,analyser,src,demo=false,volEnv=0;
+function resetAudioState(){
+  lipSync.reset();volEnv=0;Ov=0;P.O=0;P.Wf=1;P.R=0;
+}
+function pushSamplesToLipSync(ch,sr){
+  if(ch&&ch.length)lipSync.push(ch,sr||lipSync.sampleRate);
+}
+function ensureCtx(){
+  if(!actx){
+    actx=new (window.AudioContext||window.webkitAudioContext)();
+    const sp=actx.createScriptProcessor(1024,1,1);
+    const muteGain=actx.createGain();
+    muteGain.gain.value=0;
+    sp.onaudioprocess=e=>pushSamplesToLipSync(e.inputBuffer.getChannelData(0),actx.sampleRate);
+    sp.connect(muteGain);muteGain.connect(actx.destination);analyser=sp;
+  }
+  if(actx.state==='suspended')actx.resume();
+  return actx;
+}
+function stepLipSync(dt){
+  if(window.HeR&&HeR.lipOverride)return HeR.lipOverride();
+  const shape=lipSync.step(dt);volEnv=shape.level;
+  return {tO:shape.open,tW:shape.width,tR:shape.round};
+}
+let pcmT=0;
+const expBox=document.getElementById('exps');
+for(const n of Object.keys(EXPS)){const b=document.createElement('button');b.textContent=n;if(n==='平静')b.classList.add('on');b.onclick=()=>setExp(n);expBox.appendChild(b)}
+window._dbg={get chains(){return chains},app,hf:(x,y,h)=>headField(x,y,h?HOFF_H:HOFF),get eyesDX(){return 0},get eyes(){return eyes},L,get blush(){return blush},faceG};
+window.HeR={get motionStudy(){return {rhythmic:presenceMotion.rhythmic,mix:directedMix,amplitude,faceMix,face:presenceMotion.facePulse?.kind??null,cue:presenceMotion.cue?.name||"hold",events:presenceMotion.events.slice(-8)}},setMotionStyle,setPresenceState,get presenceState(){return presence},setExpression:n=>{if(!EXPS[n])throw new Error('Unknown expression');setExp(n)},expressions:Object.keys(EXPS),feedPCM(f32,sr=24000){ensureCtx();const b=actx.createBuffer(1,f32.length,sr);b.copyToChannel(f32,0);const s=actx.createBufferSource();s.buffer=b;s.connect(analyser);s.connect(actx.destination);
+  pcmT=Math.max(pcmT,actx.currentTime+.02);s.start(pcmT);pcmT+=b.duration},
+  // 不重复播放：把客户端已有的播放源接到分析器（只分析不输出）。arg = MediaStream | HTMLMediaElement | AudioNode(需同一 AudioContext，用 HeR.audioContext)
+  attachAudio(arg){ensureCtx();if(src)try{src.disconnect(analyser)}catch(e){}resetAudioState();
+    if(arg instanceof MediaStream)src=actx.createMediaStreamSource(arg);
+    else if(arg instanceof HTMLMediaElement){src=actx.createMediaElementSource(arg);src.connect(actx.destination)}
+    else src=arg;
+    src.connect(analyser);demo=false},
+  pushAudioSamples(f32,sr){const rate=sr||(actx?actx.sampleRate:24000);pushSamplesToLipSync(f32,rate)},
+  resetAudio(){resetAudioState()},
+  get lipSyncSampleRate(){return lipSync.sampleRate},
+  get audioContext(){return ensureCtx()},params:P,blink};
+const sl=id=>document.getElementById(id);
+sl('bMic').onclick=async e=>{ensureCtx();try{const st=await navigator.mediaDevices.getUserMedia({audio:true});src&&src.disconnect();src=actx.createMediaStreamSource(st);src.connect(analyser);e.target.classList.add('on');demo=false;sl('bDemo').classList.remove('on')}catch(err){alert('麦克风不可用：'+err.message)}};
+sl('fAudio').onchange=e=>{const f=e.target.files[0];if(!f)return;ensureCtx();const a=new Audio(URL.createObjectURL(f));a.play();src&&src.disconnect();src=actx.createMediaElementSource(a);src.connect(analyser);src.connect(actx.destination);demo=false};
+sl('bDemo').onclick=e=>{demo=!demo;e.target.classList.toggle('on',demo)};
+sl('bBlink').onclick=blink;
+sl('bMouse').onclick=e=>{follow=!follow;manual=false;e.target.classList.toggle('on',follow)};
+['sAX','sAY','sAZ','sBodyX','sBodyY','sBodyZ','sEye','sMouth','sVowel','sGX','sGY','sSmile','sBY','sBA','sBX','sMF','sCheek'].forEach(id=>sl(id).addEventListener('input',()=>{manual=true;follow=false;sl('bMouse').classList.remove('on')}));
+// vowel -> continuous shape (open amount, width, roundness)
+const VS={a:[.95,1.02,.05],i:[.32,1.24,0],u:[.38,.72,.9],e:[.58,1.16,.08],o:[.72,.78,.8],n:[0,1,0]};
+// demo: syllables with smooth envelopes
+let syl=null;
+function demoShape(now){
+  if(!syl||now>syl.end){const gap=Math.random()<.18;const v='aiueoaeaio'[Math.floor(Math.random()*10)];const d=gap?220+Math.random()*250:150+Math.random()*130;
+    syl={start:now,end:now+d,v:gap?'n':v,amp:.55+Math.random()*.45}}
+  const x=(now-syl.start)/(syl.end-syl.start);const env=Math.pow(Math.sin(Math.PI*Math.min(1,x)),.7);const s=VS[syl.v];
+  return [s[0]*env*syl.amp,s[1],s[2]]}
+// ---------- loop ----------
+const lerp=(a,b,k)=>a+(b-a)*k;
+const OMAX=28; let Ov=0,rigReadyPosted=false;
+function headMatrix(){return new PIXI.Matrix().translate(-PIV.x,-PIV.y).rotate(head.rotation).translate(head.position.x,head.position.y)}
+app.ticker.add(()=>{
+  const now=performance.now(),t=(now-t0)/1000,dt=Math.min(app.ticker.deltaMS/1000,.05),f=dt*60;
+  let tax=T.ax,tay=T.ay,taz=T.az,tgx=T.gx,tgy=T.gy;
+  if(manual){tax=+sl('sAX').value;tay=+sl('sAY').value;taz=+sl('sAZ').value;tgx=+sl('sGX').value;tgy=+sl('sGY').value}
+  else if(follow){tax=T.ax*.75;tay=T.ay*.7;}
+  else{ // idle: eyes jump to a new point every 0.8-3 s (saccade), the head drifts after them with a smaller amplitude
+    if(now>sac.next){const big=Math.random()<.35;sac.x=(Math.random()*2-1)*(big?.7:.25);sac.y=(Math.random()*2-1)*(big?.4:.15);
+      sac.next=now+800+Math.random()*2200;if(big&&blinkT<0&&Math.random()<.5)blink()}
+    tgx=sac.x;tgy=sac.y;tax=sac.x*.35+Math.sin(t*.37)*.08;tay=sac.y*.3+Math.sin(t*.23)*.06;taz=Math.sin(t*.31)*.1}
+  // Sandbox choreography: continuous targets, never writing over the output params.
+  const age=(now-presenceAt)/1000;
+  if(presence==='listening'){
+    tgx=Math.sin(t*.65)*.06;tgy=.015;tax=tgx*.3;
+    const nod=Math.max(0,Math.sin(age*.9))**18;
+    tay=.025+nod*.09;taz=Math.sin(t*.45)*.025;
+  }else if(presence==='thinking'){
+    tgx=-.12+Math.sin(t*.3)*.025;tgy=.04;
+    tax=-.035;tay=.015;taz=.025;
+  }else if(presence==='speaking'){
+    tgx=Math.sin(t*.55)*.09;tgy=Math.sin(t*.38)*.035;
+    tax=Math.sin(t*.6)*.075;tay=Math.sin(t*1.5)*.035;
+    taz=Math.sin(t*.47)*.045;
+  }else{
+    tgx=Math.sin(t*.31)*.15;tgy=Math.sin(t*.23)*.055;
+    tax=tgx*.3;tay=tgy*.3;taz=Math.sin(t*.31)*.045;
+  }
+  // Smoothly compare the original motion with a stronger, staggered breath/weight shift.
+  motionMix=lerp(motionMix,motionTarget,Math.min(1,dt*3));
+  const quiet=presence==='thinking'?.5:1;
+  const swell=.5-.5*Math.cos(t*.46); // gentle activity windows with a quiet pause
+  const breathWave=Math.sin(t*2*Math.PI/4.8);
+  const voiceMotion=presence==='speaking'?volEnv:0;
+  tax+=motionMix*quiet*(Math.sin(t*.63)*.10*swell);
+  tay+=motionMix*quiet*(Math.sin((t-.32)*2*Math.PI/4.8)*.045+voiceMotion*.025);
+  taz+=motionMix*quiet*(Math.sin(t*.52+.8)*.12*swell);
+  directedMix=lerp(directedMix,directedTarget,Math.min(1,dt*4));
+  const directed=presenceMotion.step(t,dt,presence==='speaking'?volEnv:0);
+  amplitude=lerp(amplitude,amplitudeTarget,Math.min(1,dt*4));
+  faceMix=lerp(faceMix,faceTarget,Math.min(1,dt*5));
+  for(const k of ['ax','ay','az','bx','by','bz'])directed[k]*=amplitude;
+  directed.gx*=1+(amplitude-1)*.32;directed.gy*=1+(amplitude-1)*.32;
+  tax=lerp(tax,directed.ax,directedMix);tay=lerp(tay,directed.ay,directedMix);taz=lerp(taz,directed.az,directedMix);
+  tgx=lerp(tgx,directed.gx,directedMix);tgy=lerp(tgy,directed.gy,directedMix);
+  // expression fade
+  expW=Math.min(1,expW+dt/.35);expPrevW=Math.max(0,expPrevW-dt/.35);
+  const EV={sleep:0,eyeL:1,eyeR:1,smile:0,bLY:0,bRY:0,bLA:0,bRA:0,bLF:0,bRF:0,bLX:0,bRX:0,mForm:0,mOpen:0,mRound:0,cheek:0,gx:0,gy:0,ax:0,ay:0,az:0,bx:0,by:0,bz:0};
+  if(manual){EV.smile=+sl('sSmile').value;EV.bLY=EV.bRY=+sl('sBY').value;EV.bLA=EV.bRA=+sl('sBA').value;EV.bLX=EV.bRX=+sl('sBX').value;EV.mForm=+sl('sMF').value;EV.cheek=+sl('sCheek').value}
+  applyExp(EV,expPrev,expPrevW);applyExp(EV,expCur,expW);
+  // Accent only the speaking face; existing smile and blink still own their channels.
+  if(presence==='speaking'||(presenceMotion.rhythmic&&presence==='listening')){
+    EV.bLY+=directed.face.browL*faceMix;EV.bRY+=directed.face.browR*faceMix;
+    EV.eyeL*=1+(directed.face.eyeL-1)*faceMix;EV.eyeR*=1+(directed.face.eyeR-1)*faceMix;
+    tgx+=directed.face.gx*faceMix;tgy+=directed.face.gy*faceMix;
+  }
+  const expressionGaze=presence==='thinking'?1-directedMix:1;
+  tgx+=EV.gx*expressionGaze;tgy+=EV.gy*expressionGaze;tax+=EV.ax*.6;tay+=EV.ay;taz+=EV.az;
+  P.ax=lerp(P.ax,tax,.06*f);P.ay=lerp(P.ay,tay,.06*f);P.az=lerp(P.az,taz,.05*f);
+  // body follows the head with a smaller amplitude and a lag (heavier), plus a slow idle sway
+  let tbx=P.ax*.45+Math.sin(t*.19)*.06, tby=P.ay*.3+EV.by, tbz=P.az*.35+Math.sin(t*.13+1)*.08+EV.bz;
+  tbx+=motionMix*quiet*Math.sin(t*.63+.35)*.19*swell;
+  tby+=motionMix*quiet*breathWave*.12;
+  tbz+=motionMix*quiet*Math.sin(t*.52+1.15)*.18*swell;
+  tbx=lerp(tbx,directed.bx,directedMix);tby=lerp(tby,directed.by+EV.by,directedMix);tbz=lerp(tbz,directed.bz+EV.bz,directedMix);
+  if(manual){tbx=+sl('sBodyX').value;tby=+sl('sBodyY').value;tbz=+sl('sBodyZ').value}
+  P.bx=lerp(P.bx,tbx,.035*f);P.by=lerp(P.by,tby,.035*f);P.bz=lerp(P.bz,tbz,.03*f);
+  // saccades are fast (~80 ms), smooth pursuit when following the pointer
+  const gk=follow&&!manual?.25:.45; P.gx=lerp(P.gx,Math.max(-1,Math.min(1,tgx)),gk*f);P.gy=lerp(P.gy,Math.max(-1,Math.min(1,tgy)),gk*f);
+  for(const k of ['sleep','smile','bLY','bRY','bLA','bRA','bLF','bRF','bLX','bRX','mForm','cheek','eyeL','eyeR','mOpen','mRound'])P['e_'+k]=P['e_'+k]===undefined?EV[k]:lerp(P['e_'+k],EV[k],.3*f);
+  {const ph=(t/3.8)%1,ss=x=>x*x*(3-2*x);P.breath=ph<.42?ss(ph/.42):1-ss((ph-.42)/.58)}
+  // blink
+  if(manual&&+sl('sEye').value<1)P.eye=+sl('sEye').value;else{
+    nextBlink-=dt*1000;if(nextBlink<=0&&blinkT<0){blink();dbl=Math.random()<.15;nextBlink=2500+Math.random()*3500}
+    if(blinkT>=0){blinkT+=dt;P.eye=blinkK(blinkT);if(blinkT>.27){blinkT=dbl?0:-1;dbl=false}}else P.eye=1}
+  // mouth target from local PCM energy and spectral cues
+  let tO=0,tW=1,tR=0;
+  if(manual){const s=VS[sl('sVowel').value];tO=+sl('sMouth').value*s[0];tW=lerp(1,s[1],Math.min(1,+sl('sMouth').value*2));tR=s[2]}
+  else if(demo){[tO,tW,tR]=demoShape(now)}
+  else{const r=stepLipSync(dt);
+    if(r){
+      if(r.tO!==undefined){tO=r.tO;tW=r.tW;tR=r.tR}
+      else if(r.lvl>.02){tO=r.lvl*(1-.5*r.round)*(r.wide>0?1-.4*r.wide:1);tW=1+.12*r.wide-.24*r.round;tR=r.round}
+    }}
+  tO=Math.min(1,tO+P.e_mOpen); tR=Math.max(tR,Math.min(1,P.e_mRound)); MF=Math.max(-1,Math.min(1,P.e_mForm));
+  Ov=lerp(Ov,tO,(tO>Ov?.55:.28)*f); P.O=Ov*OMAX; P.Wf=lerp(P.Wf,tW,.32*f); P.R=lerp(P.R,tR,.32*f);
+  sl('vis').textContent='张嘴 '+Ov.toFixed(2)+'  宽度 '+P.Wf.toFixed(2)+'  圆唇 '+P.R.toFixed(2)+'  睁眼 '+P.eye.toFixed(2);
+  drawMouth(P.O,P.Wf,P.R);
+  // eyes: per-eye open, gaze couples to the upper lid (look down -> lid lowers), eye smile, perspective for Angle X
+  const gazeLid=1-.16*Math.max(0,-P.gy)+.05*Math.max(0,P.gy); // EyeBallY + = up (standard)
+  for(const s of ['r','l']){const e=eyes[s];
+    const k=Math.max(.02,P.eye*(s==='r'?P.e_eyeR:P.e_eyeL)*gazeLid), sm=Math.max(0,Math.min(1,P.e_smile));
+    const far=(s==='l')===(P.ax>0), sx=1-(far?.05:-.02)*Math.abs(P.ax), dx=P.ax*2;
+    lidDeform(e,e.wpl,k,sm,sx,dx,false); lidDeform(e,e.lpl,k,sm,sx,dx,true);
+    app.renderer.render(e.wpl,{renderTexture:e.maskRT,clear:true,transform:e.MM});
+    e.ir.x=e.ix+dx+P.gx*10*sx; e.ir.y=e.iy-P.gy*8+(1-Math.min(k,1))*3-sm*2.5;
+    e.ir.scale.x=1;
+    e.lid.alpha=Math.min(1,(1-k)*4); e.cl.alpha=Math.max(0,Math.min(1,(.35-k)/.25));
+    e.lid.alpha=Math.min(1,(1-Math.min(k,1))*4)*(1-sm); e.cl.alpha=Math.max(0,Math.min(1,(.35-k)/.25))*(1-sm); e.cs.visible=false; e.ss.visible=false; e.wpl.alpha=e.lpl.alpha=e.ir.alpha=1; e.cl.x=e.B.x+dx; e.lid.x=meta['eyelid_'+s].x+dx;
+    const L_=s==='l';
+    browDeform(e,(L_?P.e_bLY:P.e_bRY)-(1-Math.min(k,1))*.18-sm*.1,L_?P.e_bLA:P.e_bRA,L_?P.e_bLF:P.e_bRF,L_?P.e_bLX:P.e_bRX,P.ax*2.5)}
+  blush.alpha=Math.max(0,Math.min(1,P.e_cheek))*.32; blush.x=P.ax*4;
+  mouthC.x=P.ax*6;
+  // head
+  // Angle X / Y never move the head as a whole: turning is done only inside the face warp.
+  // Only Angle Z (tilt) rotates the head, around the chin/neck joint.
+  const rot=P.az*.20;
+  BOFF=blend(BODYKF,P.bx,P.by,BREATHKF.map(q=>[q[0]*P.breath*(1+motionMix*(1-directedMix)*.85*quiet+directedMix*(.25+(amplitude-1)*.35)),q[1]*P.breath*(1+motionMix*(1-directedMix)*.85*quiet+directedMix*(.25+(amplitude-1)*.35))]));
+  const nd=bodyField(NECK.x,NECK.y);
+  for(const g of [backHead,head]){g.rotation=rot;g.position.set(PIV.x+nd[0],PIV.y+nd[1])}
+
+  const jaw=Ov*8; const JAWK=[0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,.15,.3,.15,0, 0,.6,1.1,.6,0];
+  HOFF=blend(HEADKF,P.ax,P.ay,JAWK.map(q=>[0,q*jaw])); HOFF_H=blend(HAIRKF,P.ax,P.ay);
+  headFollow(facePlane,1);
+  L.nose.x=meta.nose.x+P.ax*12;L.nose.y=meta.nose.y+P.ay*5; app.renderer.render(faceG,{renderTexture:faceRT,clear:true,transform:faceM});
+  // body
+  root.rotation=P.bz*.06;
+  for(const n of ['handwear_l','handwear_r','topwear','collar'])bodyFollow(L[n]);
+  // neck belongs to the body: it does NOT follow Angle X/Y. The face (drawn on top) slides over it.
+  // For head tilt only, the top few px of the neck bend with the head so the joint stays closed.
+  {const hm=headMatrix(),n=L.neck,d=n._buf.data,o=n._o,b=n._b,top=470,bot=540,pt=new PIXI.Point();
+   for(let i=0;i<d.length;i+=2){const gx=b.x+o[i],gy=b.y+o[i+1];let w=Math.max(0,Math.min(1,(bot-gy)/(bot-top)));w=w*w*(3-2*w);
+     hm.apply({x:gx,y:gy},pt);const bf=bodyField(gx,gy);d[i]=lerp(gx+bf[0],pt.x,w)-b.x;d[i+1]=lerp(gy+bf[1],pt.y,w)-b.y}
+   n._buf.update()}
+  // hair physics
+  const drv=P.ax+P.bx*.8, vel=(drv-lastAX)/Math.max(dt,1e-3);lastAX=drv;
+  hair.v+=(-hair.x*60-hair.v*7-vel*90)*dt;hair.x+=hair.v*dt;
+  const wind=Math.sin(t*1.3)*3+Math.sin(t*2.9)*1.5;
+  // hair lying on the shoulders/chest is held by the body, not by the head: undo the head tilt there (blend by w)
+  const hmI=headMatrix(),hp=new PIXI.Point();
+  const sway=(m,kh)=>(x,y)=>{let t=Math.max(0,Math.min(1,(y-m._rootY)/m._len));t=t*t*(3-2*t);let w=Math.max(0,Math.min(1,(y-560)/300));w=w*w*(3-2*w);
+    const bf=bodyField(x,y);hmI.applyInverse({x:x+bf[0],y:y+bf[1]},hp);const rx=RIGX.back*P.ax;
+    let gv=Math.max(0,Math.min(1,(y-420)/260));gv=gv*gv*(3-2*gv);const px=((hair.x+wind)*t-P.az*26*gv)*(1-.65*w);
+    return [px+rx*(1-w*.85)+(hp.x-x)*w*.85,(hp.y-y)*w*.85]};
+  // crown = the hair surface seen above the bangs (parting + strands combed away from it). The visible crown belongs in
+  // the front-hair group, so its parting stays on the bangs' parting. ONE shared offset field for every back-hair layer
+  // (cap, long hair, side curls) so their outlines never shear against each other: on top of the head the whole crown
+  // moves as one piece with the front hair; over the face it follows the face outline like the locks lying on it;
+  // outside the face and below the temples it hands back to the back-hair amount.
+  {const sm=v=>{v=Math.max(0,Math.min(1,v));return v*v*(3-2*v)};
+   const eR=y=>headField(368,Math.min(y,470))[0], eL=y=>headField(650,Math.min(y,470))[0];
+   CROWN=(x,y)=>{const s=sm((x-430)/150), edge=lerpA(eR(y),eL(y),s), lead=sm(1-(y-200)/110);
+     const front=lerpA(edge,RIGX.front*P.ax,lead), t=Math.max(0,Math.min(1,(y-40)/290)), fy=RIG.eyeY*P.ay*lerpA(1,.3,t);
+     const wf=lerpA(sm(1-Math.max(0,Math.max(368-x,x-650))/120),1,sm(1-(y-150)/140))*sm(1-(y-230)/170);
+     return [(front-RIGX.back*P.ax)*wf, fy*wf]};
+   headFollow(L.bh_cap,0,(x,y)=>{const c=CROWN(x,y);return [RIGX.back*P.ax+c[0],c[1]]})}
+  {const sw=sway(L.bh_long,0);headFollow(L.bh_long,0,(x,y)=>{const r=sw(x,y),c=CROWN(x,y);return [r[0]+c[0],r[1]+c[1]]})}
+  // front locks: 2-node pendulum chain per lock (root fixed on the head; mid node and tip node lag and overshoot).
+  // Motion inputs: Angle X, Angle Z, Body X (horizontal) and Angle Y (vertical bounce).
+  const vX=vel, vZ=(P.az-(chains._az??P.az))/Math.max(dt,1e-3), vY=(P.ay-(chains._ay??P.ay))/Math.max(dt,1e-3);chains._az=P.az;chains._ay=P.ay;
+  for(const [n,ry,len,kh,c] of [...HAIRG,...BACKG]){const h=chains[n],m=L[n];
+    const sub=4,ds=dt/sub;for(let k=0;k<sub;k++){
+      const f1=-c.k*h.x1-c.c*h.v1-(vX*c.g+vZ*c.g*.35)+c.k*.5*(h.x2-h.x1);
+      const f2=-c.k*.7*(h.x2-h.x1*c.lag)-c.c*.8*h.v2;
+      h.v1+=f1*ds;h.x1+=h.v1*ds;h.v2+=f2*ds;h.x2+=h.v2*ds;
+      h.vy1+=(-c.k*h.y1-c.c*h.vy1-vY*c.g*.25)*ds;h.y1+=h.vy1*ds}
+    const ph=n.endsWith('_l')?0:1.7, wnd=Math.sin(t*1.3+ph)*3+Math.sin(t*2.9+ph*.6)*1.5;
+    // Locks touch each other on the head (bang tip / face lock / outer lock meet at the temple). Up there they must move
+    // as ONE piece, otherwise the joints tear open. So: a shared displacement (the side's face-lock chain, common root/length)
+    // on the head, blending into each lock's own chain only below the temple where the locks hang free.
+    const sh=chains[n.startsWith('bh_')?n:'hair_in_'+n.slice(-1)], SR=150, SL=780, FH=ZERO25, isBack=n.startsWith('bh_');
+    headFollow(m,kh,(x,y)=>{let u=Math.max(0,Math.min(1,(y-ry)/len));const a=Math.min(1,u*2),b=Math.max(0,u*2-1);
+      let us=Math.max(0,Math.min(1,(y-SR)/SL));const as=Math.min(1,us*2),bs=Math.max(0,us*2-1);
+      let sep=Math.max(0,Math.min(1,(y-330)/140));sep=sep*sep*(3-2*sep);
+      const own=h.x1*a*a*(3-2*a)+(h.x2-h.x1)*b, shared=sh.x1*as*as*(3-2*as)+(sh.x2-sh.x1)*bs;
+      const ea=1;let w=Math.max(0,Math.min(1,(y-560)/300));w=w*w*(3-2*w);
+      // tilt "gravity" (hair hanging straight while the head tilts) only where the hair hangs free below the jaw;
+      // on the head the locks lie on the skin/ears and must stay glued to them, else the temple opens up
+      let gv=Math.max(0,Math.min(1,(y-420)/260));gv=gv*gv*(3-2*gv);
+      const sw=(shared+(own-shared)*sep+wnd*us*us-P.az*26*gv)*(1-.65*w);
+      const bf=bodyField(x,y);hmI.applyInverse({x:x+bf[0],y:y+bf[1]},hp);
+      // rigid turn/nod offset of this lock: on the head all front locks share the front-hair amount (they overlap there),
+      // where they hang free they blend to the side-hair amount; nod: hairline moves most, tips less (vertical squash)
+      let rgx,rgy;
+      if(isBack){const c=CROWN(x,y);rgx=RIGX.back*P.ax+c[0];rgy=c[1]}
+      else{ // the locks that lie along the face edge must move exactly with the face outline there (else the outline slides
+            // out from under them and the layer behind shows as a band); bangs on the forehead lead (front hair ~1.4x outline)
+        const ex=n.endsWith('_l')?650:368, edge=headField(ex,Math.min(y,470))[0];
+        const lead=Math.max(0,Math.min(1,1-(y-200)/110)); // same for every lock of the side (they overlap on the head)
+        rgx=lerpA(edge,RIGX.front*P.ax,Math.max(0,Math.min(1,lead)));
+        const t=Math.max(0,Math.min(1,(y-40)/290));rgy=RIG.eyeY*P.ay*lerpA(1,.3,t)}
+      const vy=(sh.y1+(h.y1-sh.y1)*sep)*us*us;
+      return [sw+rgx*(1-w*.85)+(hp.x-x)*w*.85, vy*(1-w)+rgy*(1-w*.85)+(hp.y-y)*w*.85]},FH)}
+  // ears: the root (tucked under the face edge) must stay with the face outline, otherwise the cut edge of the ear art
+  // (normally hidden under the cheek) slides out as a grey band. The ear as a whole lags: realised
+  // by pinning the root and letting the outer rim move less -> near ear opens a bit, far ear narrows.
+  // pinned to the face OUTLINE next to it (x of the cheek edge), so the seam ear/cheek never opens; the outer rim lags a little
+  for(const [ear,sg] of [[L.ears_r,-1],[L.ears_l,1]]){const b=ear._b,ex=sg<0?368:648,ax=sg<0?b.x+b.w:b.x;
+    headFollow(ear,0,(x,y)=>{const h=headField(ex,y),u=Math.min(1,Math.abs(x-ax)/b.w);return [h[0]*(1-.35*u),h[1]*(1-.3*u)]})}
+  if(!rigReadyPosted){
+    rigReadyPosted=true;
+    requestAnimationFrame(()=>{
+      try{window.webkit?.messageHandlers?.herRigReady?.postMessage(true)}catch(e){}
+    });
+  }
+});
+})();
+</script>
+</body>
+</html>
